@@ -60,6 +60,7 @@ def filter_image_msgs(topic, datatype, md5sum, msg_def, header):
             print "Using topic %s with datatype %s" % (topic,datatype)
             return True
     if topic.startswith("/mavros/"): return True
+    if topic.startswith("/gopro/target_position_local"): return True
     return False
 
 def process_frame(topic, msg, t, pix_fmt=None):
@@ -85,47 +86,56 @@ def process_frame(topic, msg, t, pix_fmt=None):
         img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
         
         xoffset = 10
-        yoffset = 80
+        yoffset = 50
         linespacing = 15
         row = 0
 
-        def printText(text):
-            cv2.putText(img,text,(xoffset,yoffset+linespacing*printText.row),cv2.FONT_HERSHEY_PLAIN,1.0,(255,255,255),1,cv2.LINE_AA)
-            printText.row += 1
-        printText.row = 0
-
-        def printTextRight(text):
-            font = cv2.FONT_HERSHEY_PLAIN
-            fontSize = 1.0
-            fontThick = 1
+        def printText(text, alignRight=False, bold=False, \
+                fontColor=(255,255,255), fontSize=1.0, font=cv2.FONT_HERSHEY_PLAIN):
+            if bold:
+                fontThick = 2
+            else:
+                fontThick = 1
             retval, baseline = cv2.getTextSize(text, font, fontSize, fontThick) 
-            cv2.putText(img,text,(width-xoffset-retval[0],yoffset+linespacing*printTextRight.row),font,fontSize,(255,255,255),fontThick,cv2.LINE_AA)
-            printTextRight.row += 1
-        printTextRight.row = 0
+
+            if alignRight:
+                x = width-xoffset-retval[0]
+                y = yoffset+linespacing * printText.rightRow
+                printText.rightRow += 1
+            else:
+                x = xoffset
+                y = yoffset+linespacing * printText.leftRow
+                printText.leftRow += 1
+
+            cv2.putText(img,text,(x,y),font,fontSize,fontColor,fontThick,cv2.LINE_AA)
+
+        # initial row counters
+        printText.leftRow = 0
+        printText.rightRow = 0
         
-        for attr in ("Latitude", "Longitude", "Altitude", "Compass Heading", "Battery Voltage", "Battery Pct"):
+        for attr in ("Latitude", "Longitude", "Altitude", "Compass Heading", "Local Position", "Target Position", "Current Waypoint"):
             if attr in telemetry:
                 printText("%s: %s" % (attr,telemetry[attr]))
             else:
                 printText("%s: N/A" % attr)
 
-        printTextRight("Frame %d"%frame)
+        if "Command" in telemetry:
+            printText("%s" % telemetry["Command"])
+        else:
+            printText("NO COMMAND")
+
+        printText("Frame %d"%frame, alignRight=True)
 
         if "Time" in telemetry:
-            printTextRight("%s" % telemetry["Time"])
+            printText("%s" % telemetry["Time"], alignRight=True)
         else:
-            printTextRight("TIME UNKNOWN")
+            printText("TIME UNKNOWN", alignRight=True)
 
-        for attr in ("Remote RSSI", "RX Errors", "Waypoint"):
+        for attr in ("Battery Voltage", "Battery Pct", "Remote RSSI", "RX Errors"):
             if attr in telemetry:
-                printTextRight("%s: %s" % (attr,telemetry[attr]))
+                printText("%s: %s" % (attr,telemetry[attr]), alignRight=True)
             else:
-                printTextRight("%s: N/A" % attr)
-
-        if "Command" in telemetry:
-            printTextRight("%s" % telemetry["Command"])
-        else:
-            printTextRight("NO COMMAND")
+                printText("%s: N/A" % attr, alignRight=True)
 
         if dup>2:
             DUP_MSG = "Lost Connection"
@@ -280,6 +290,16 @@ for files in range(0,len(opt_files)):
             position = getattr(pose, "position")
             telemetry["Altitude"] = position.z
 
+        if topic=="/mavros/local_position/pose":
+            pose = getattr(msg, "pose")
+            position = getattr(pose, "position")
+            telemetry["Local Position"] = "%d,%d,%d" % (position.x, position.y, position.z)
+
+        if topic=="/gopro/target_position_local":
+            position = getattr(msg, "point")
+            telemetry["Target Position"] = "%d,%d,%d" % (position.x, position.y, position.z)
+            print("Target!")
+
         if topic=="/mavros/radio_status":
             telemetry["Remote RSSI"] = getattr(msg, "remrssi")
             telemetry["RX Errors"] = getattr(msg, "rxerrors")
@@ -297,7 +317,7 @@ for files in range(0,len(opt_files)):
             index = 1
             for waypoint in msg.waypoints:
                 if waypoint.is_current:
-                    telemetry["Waypoint"] = index
+                    telemetry["Current Waypoint"] = index
                     cmd = int(waypoint.command)
                     if cmd in mavCmd:
                         cmd = mavCmd[cmd]

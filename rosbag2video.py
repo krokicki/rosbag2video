@@ -16,7 +16,28 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import numpy as np
-import shlex, subprocess
+import datetime
+
+mavCmd = {
+    16: "MAV_CMD_NAV_WAYPOINT",
+    17: "MAV_CMD_NAV_LOITER_UNLIM",
+    18: "MAV_CMD_NAV_LOITER_TURNS",
+    19: "MAV_CMD_NAV_LOITER_TIME",
+    20: "MAV_CMD_NAV_RETURN_TO_LAUNCH",
+    21: "MAV_CMD_NAV_LAND",
+    22: "MAV_CMD_NAV_TAKEOFF",
+    23: "MAV_CMD_NAV_LAND_LOCAL",
+    24: "MAV_CMD_NAV_TAKEOFF_LOCAL",
+    25: "MAV_CMD_NAV_FOLLOW",
+    30: "MAV_CMD_NAV_CONTINUE_AND_CHANGE_ALT",
+    31: "MAV_CMD_NAV_LOITER_TO_ALT",
+    32: "MAV_CMD_DO_FOLLOW",
+    33: "MAV_CMD_DO_FOLLOW_REPOSITION",
+    80: "MAV_CMD_NAV_ROI",
+    81: "MAV_CMD_NAV_PATHPLANNING",
+    82: "MAV_CMD_NAV_SPLINE_WAYPOINT",
+    84: "MAV_CMD_NAV_VTOL_TAKEOFF"
+}
 
 image_topic = None
 
@@ -26,7 +47,6 @@ def filter_image_msgs(topic, datatype, md5sum, msg_def, header):
     if datatype=="sensor_msgs/CompressedImage":
         if (opt_topic != "" and opt_topic == topic) or opt_topic == "":
             image_topic = topic
-            print "############# USING ######################"
             print "Using topic %s with datatype %s" % (topic,datatype)
             return True
     if datatype=="theora_image_transport/Packet":
@@ -39,13 +59,9 @@ def filter_image_msgs(topic, datatype, md5sum, msg_def, header):
             image_topic = topic
             print "Using topic %s with datatype %s" % (topic,datatype)
             return True
-    if topic=="/mavros/global_position/global":
-        return True
-    if topic=="/mavros/battery":
-        return True
+    if topic.startswith("/mavros/"): return True
     return False
 
-frame = 0
 def process_frame(topic, msg, t, pix_fmt=None):
     global out_file, t_first, t_video, t_file, cv_image, frame, telemetry
 
@@ -61,13 +77,8 @@ def process_frame(topic, msg, t, pix_fmt=None):
     while t_video[topic] < t_file[topic]:
         #print "  t_video[topic]=",t_video[topic]," < t_file[topic]=",t_file[topic]
         if not topic in p_avconv:
-            if pix_fmt:
-                fourcc = cv2.VideoWriter_fourcc(*'XVID')
-                p_avconv[topic] = cv2.VideoWriter('%s'%(out_file), fourcc, opt_fps, (width, height))
-                #size = str(msg.width)+"x"+str(msg.height)
-                #p_avconv[topic] = subprocess.Popen(['avconv','-r',str(opt_fps),'-an','-f','rawvideo','-s',size,'-pix_fmt', pix_fmt,'-i','-',out_file],stdin=subprocess.PIPE)
-            else:
-                p_avconv[topic] = subprocess.Popen(['avconv','-r',str(opt_fps),'-an','-c','mjpeg','-f','mjpeg','-i','-',out_file],stdin=subprocess.PIPE)
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            p_avconv[topic] = cv2.VideoWriter('%s'%(out_file), fourcc, opt_fps, (width, height))
 
         frame = frame + 1
         img = cv_image
@@ -83,10 +94,38 @@ def process_frame(topic, msg, t, pix_fmt=None):
             printText.row += 1
         printText.row = 0
 
-        printText("Frame %d"%frame)
-        for attr in ("Latitude", "Longitude", "Altitude", "Battery Voltage", "Battery Pct"):
+        def printTextRight(text):
+            font = cv2.FONT_HERSHEY_PLAIN
+            fontSize = 1.0
+            fontThick = 1
+            retval, baseline = cv2.getTextSize(text, font, fontSize, fontThick) 
+            cv2.putText(img,text,(width-xoffset-retval[0],yoffset+linespacing*printTextRight.row),font,fontSize,(255,255,255),fontThick,cv2.LINE_AA)
+            printTextRight.row += 1
+        printTextRight.row = 0
+        
+        for attr in ("Latitude", "Longitude", "Altitude", "Compass Heading", "Battery Voltage", "Battery Pct"):
             if attr in telemetry:
                 printText("%s: %s" % (attr,telemetry[attr]))
+            else:
+                printText("%s: N/A" % attr)
+
+        printTextRight("Frame %d"%frame)
+
+        if "Time" in telemetry:
+            printTextRight("%s" % telemetry["Time"])
+        else:
+            printTextRight("TIME UNKNOWN")
+
+        for attr in ("Remote RSSI", "RX Errors", "Waypoint"):
+            if attr in telemetry:
+                printTextRight("%s: %s" % (attr,telemetry[attr]))
+            else:
+                printTextRight("%s: N/A" % attr)
+
+        if "Command" in telemetry:
+            printTextRight("%s" % telemetry["Command"])
+        else:
+            printTextRight("NO COMMAND")
 
         if dup>2:
             DUP_MSG = "Lost Connection"
@@ -114,14 +153,14 @@ def process_frame(topic, msg, t, pix_fmt=None):
 
 def parse_jpeg(topic, msg, t):
     global cv_image
+    #print "Parsing Jpeg"
     if msg.format.find("jpeg")!=-1:
-        #print "Parsing Jpeg"
         if msg.format.find("8")!=-1 and (msg.format.find("rgb")!=-1 or msg.format.find("bgr")!=-1):
             np_arr = np.fromstring(msg.data, np.uint8)
-            cv_image = cv2.imdecode(np_arr, cv2.CV_LOAD_IMAGE_COLOR)
-        elif msg.format.find("mono8")!=-1 :
+            cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        elif msg.format.find("mono8")!=-1:
             np_arr = np.fromstring(msg.data, np.uint8)
-            cv_image = cv2.imdecode(np_arr, cv2.CV_LOAD_IMAGE_COLOR)
+            cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         else:
             print 'Unsupported format:', msg.format
             exit(1)
@@ -213,7 +252,7 @@ t_video = {}
 cv_image = []
 p_avconv = {}
 bridge = CvBridge()
-
+frame = 0
 telemetry = {}
 
 for files in range(0,len(opt_files)):
@@ -223,20 +262,52 @@ for files in range(0,len(opt_files)):
     # Go through the bag file
     bag = rosbag.Bag(bagfile)
     topics = bag.read_messages(connection_filter=filter_image_msgs)
+    m = 0
     for topic, msg, t in topics:
+        m += 1 
         #print topic, 'at', str(t)#,'msg=', str(msg)
+        
         if topic=="/mavros/global_position/global":
             telemetry["Latitude"] = getattr(msg, "latitude")
             telemetry["Longitude"] = getattr(msg, "longitude")
-            telemetry["Altitude"] = getattr(msg, "altitude")
+
+        if topic=="/mavros/global_position/compass_hdg":
+            telemetry["Compass Heading"] = getattr(msg, "data")
+
+        if topic=="/mavros/global_position/local":
+            pose = getattr(msg, "pose")
+            pose = getattr(pose, "pose")
+            position = getattr(pose, "position")
+            telemetry["Altitude"] = position.z
+
+        if topic=="/mavros/radio_status":
+            telemetry["Remote RSSI"] = getattr(msg, "remrssi")
+            telemetry["RX Errors"] = getattr(msg, "rxerrors")
+
         if topic=="/mavros/battery":
-            telemetry["Battery Voltage"] = getattr(msg, "voltage")
-            telemetry["Battery Pct"] = getattr(msg, "percentage")
+            telemetry["Battery Voltage"] = "%#.2f" % getattr(msg, "voltage")
+            telemetry["Battery Pct"] = "%#.2f" % getattr(msg, "percentage")
+        
+        if topic=="/mavros/time_reference":
+            t = getattr(msg, "time_ref")
+            dt = datetime.datetime.fromtimestamp(t.to_sec())
+            telemetry["Time"] = str(dt)
+
+        if topic=="/mavros/mission/waypoints":
+            index = 1
+            for waypoint in msg.waypoints:
+                if waypoint.is_current:
+                    telemetry["Waypoint"] = index
+                    cmd = int(waypoint.command)
+                    if cmd in mavCmd:
+                        cmd = mavCmd[cmd]
+                    telemetry["Command"] = cmd
+                index += 1
 
         if topic==image_topic:
             try:
                 parse_jpeg(topic, msg, t)
-            except AttributeError:
+            except AttributeError, e:
                 try:
                     parse_mono(topic, msg, t)
                 except AttributeError:
@@ -246,8 +317,11 @@ for files in range(0,len(opt_files)):
 
     print "Closing bag"
     bag.close();
-    print "Releasing output files"
-    for topic in p_avconv:
-        p_avconv[topic].release()
 
+print "Releasing output files"
+for topic in p_avconv:
+    p_avconv[topic].release()
+
+print "Read %d messages" % m
+print "Wrote %d frames to %s" % (frame,out_file)
 

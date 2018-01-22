@@ -9,17 +9,23 @@ Based on rosbag2video.py by Maximilian Laiacker 2016
 import roslib
 roslib.load_manifest('rosbag')
 import rosbag
-import sys, getopt
-import os
-from sensor_msgs.msg import CompressedImage
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import numpy as np
 import datetime
+import logging
+import getopt
+import sys
+import os
 
 logo_file = "/home/krad/ros/RhinoHawk_logo2.png"
 logo = cv2.imread(logo_file, cv2.IMREAD_UNCHANGED)
+
+feetPerMeter = 3.28084
+text_x_offset = 10
+text_y_offset = 70
+linespacing = 20
 
 mavCmd = {
     16: "MAV_CMD_NAV_WAYPOINT",
@@ -47,27 +53,22 @@ image_topic = None
 def filter_image_msgs(topic, datatype, md5sum, msg_def, header):
     global image_topic
     print "%s (%s)" % (topic, datatype)
-    if datatype=="sensor_msgs/CompressedImage":
-        if (opt_topic != "" and opt_topic == topic) or opt_topic == "":
-            image_topic = topic
-            print "Using topic %s with datatype %s" % (topic,datatype)
-            return True
-    if datatype=="theora_image_transport/Packet":
-        if (opt_topic != "" and opt_topic == topic) or opt_topic == "":
-            print "Using topic %s with datatype %s" % (topic,datatype)
-            print 'Theora format is not supported'
-            return False
-    if datatype=="sensor_msgs/Image":
-        if (opt_topic != "" and opt_topic == topic) or opt_topic == "":
-            image_topic = topic
-            print "Using topic %s with datatype %s" % (topic,datatype)
-            return True
+
     if topic.startswith("/mavros/"): return True
+
     if topic.startswith("/gopro/target_position_local"): return True
+
+    if (opt_topic != "" and opt_topic == topic) or opt_topic == "":
+        if datatype in ("sensor_msgs/Image","sensor_msgs/CompressedImage"):
+            image_topic = topic
+            print "Using topic %s with datatype %s" % (topic,datatype)
+            return True
+
     return False
 
-def process_frame(topic, msg, t, pix_fmt=None):
-    global out_file, t_first, t_video, t_file, cv_image, frame, telemetry
+
+def process_frame(cv_image, topic, msg, t):
+    global bagfile, out_file, t_first, t_video, t_file, frame, telemetry
 
     height, width, channels = cv_image.shape 
     if not topic in t_first:
@@ -75,6 +76,7 @@ def process_frame(topic, msg, t, pix_fmt=None):
         t_video[topic] = 0
         t_file[topic] = 0
     t_file[topic] = (t-t_first[topic]).to_sec()
+
     # Catch up to the current place in the bag by repeating the same frame
 
     dup = 0
@@ -84,30 +86,25 @@ def process_frame(topic, msg, t, pix_fmt=None):
             fourcc = cv2.VideoWriter_fourcc(*'XVID')
             p_avconv[topic] = cv2.VideoWriter('%s'%(out_file), fourcc, opt_fps, (width, height))
 
-        frame = frame + 1
-        img = cv_image
         img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
-        
-        xoffset = 10
-        yoffset = 90
-        linespacing = 15
-        row = 0
+        frame = frame + 1
 
-        def printText(text, alignRight=False, bold=False, \
-                fontColor=(255,255,255), fontSize=1.0, font=cv2.FONT_HERSHEY_PLAIN):
-            if bold:
-                fontThick = 2
-            else:
-                fontThick = 1
+        def printText(text, alignRight=False, \
+                bold=False, \
+                fontColor=(255,255,255), \
+                fontSize=1.0, \
+                font=cv2.FONT_HERSHEY_PLAIN):
+
+            fontThick = 2 if bold else 1
             retval, baseline = cv2.getTextSize(text, font, fontSize, fontThick) 
 
             if alignRight:
-                x = width-xoffset-retval[0]
-                y = yoffset+linespacing * printText.rightRow
+                x = width-text_x_offset-retval[0]
+                y = text_y_offset + linespacing * printText.rightRow
                 printText.rightRow += 1
             else:
-                x = xoffset
-                y = yoffset+linespacing * printText.leftRow
+                x = text_x_offset
+                y = text_y_offset + linespacing * printText.leftRow
                 printText.leftRow += 1
 
             cv2.putText(img,text,(x,y),font,fontSize,fontColor,fontThick,cv2.LINE_AA)
@@ -127,6 +124,7 @@ def process_frame(topic, msg, t, pix_fmt=None):
         else:
             printText("NO COMMAND")
 
+        printText("%s"%bagfile, alignRight=True)
         printText("Frame %d"%frame, alignRight=True)
 
         if "Time" in telemetry:
@@ -162,7 +160,6 @@ def process_frame(topic, msg, t, pix_fmt=None):
         #img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
         #img = cv2.resize(img, (0,0), fx=0.5, fy=0.5) 
         p_avconv[topic].write(img)
-        #p_avconv[topic].stdin.write(msg.data)
         t_video[topic] += 1.0/opt_fps
     
         if opt_display_images:
@@ -206,42 +203,15 @@ def overlay_image_alpha(img, img_overlay, pos, alpha_mask):
                                 alpha_inv * img[y1:y2, x1:x2, c])
 
 
-def parse_jpeg(topic, msg, t):
-    global cv_image
-    #print "Parsing Jpeg"
-    if msg.format.find("jpeg")!=-1:
-        if msg.format.find("8")!=-1 and (msg.format.find("rgb")!=-1 or msg.format.find("bgr")!=-1):
-            np_arr = np.fromstring(msg.data, np.uint8)
-            cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        elif msg.format.find("mono8")!=-1:
-            np_arr = np.fromstring(msg.data, np.uint8)
-            cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        else:
-            print 'Unsupported format:', msg.format
-            exit(1)
-
-    process_frame(topic, msg, t)
-
-
-def parse_mono(topic, msg, t):
-    global cv_image
-    #print "Parsing Mono"
-    pix_fmt=""
-    if msg.encoding.find("mono8")!=-1 :
-        pix_fmt = "gray"
-        cv_image = bridge.imgmsg_to_cv2(msg, "bgr8")
-    elif msg.encoding.find("bgr8")!=-1 :
-        pix_fmt = "bgr24"
-        cv_image = bridge.imgmsg_to_cv2(msg, "bgr8")
-    elif msg.encoding.find("rgb8")!=-1 :
-        pix_fmt = "rgb24"
-        cv_image = bridge.imgmsg_to_cv2(msg, "bgr8")
+def convert_image(topic, msg, t):
+    if msg._type=="sensor_msgs/CompressedImage":
+        np_arr = np.fromstring(msg.data, np.uint8)
+        return cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    elif msg._type=="sensor_msgs/Image":
+        return bridge.imgmsg_to_cv2(msg, "bgr8")
     else:
-        print 'Unsupported encoding:', msg.encoding
-        exit(1)
-
-    process_frame(topic, msg, t, pix_fmt=pix_fmt)
-
+        raise Exception("Unsupported image format: %s"%msg._type)
+        
 
 # Main program
 
@@ -309,12 +279,11 @@ p_avconv = {}
 bridge = CvBridge()
 frame = 0
 telemetry = {}
+bagfile = None
 
 for files in range(0,len(opt_files)):
-    # First arg is the bag to look at
     bagfile = opt_files[files]
     print "Reading %s" % bagfile
-    # Go through the bag file
     bag = rosbag.Bag(bagfile)
     topics = bag.read_messages(connection_filter=filter_image_msgs)
     m = 0
@@ -333,7 +302,7 @@ for files in range(0,len(opt_files)):
             pose = getattr(msg, "pose")
             pose = getattr(pose, "pose")
             position = getattr(pose, "position")
-            telemetry["Altitude"] = position.z
+            telemetry["Altitude"] = "%2.2f m (%2.2f ft)" % (position.z, position.z * feetPerMeter)
 
         if topic=="/mavros/local_position/pose":
             pose = getattr(msg, "pose")
@@ -353,8 +322,8 @@ for files in range(0,len(opt_files)):
             telemetry["Battery Pct"] = "%#.2f" % getattr(msg, "percentage")
         
         if topic=="/mavros/time_reference":
-            t = getattr(msg, "time_ref")
-            dt = datetime.datetime.fromtimestamp(t.to_sec())
+            time_ref = getattr(msg, "time_ref")
+            dt = datetime.datetime.fromtimestamp(time_ref.to_sec())
             telemetry["Time"] = str(dt)
 
         if topic=="/mavros/mission/waypoints":
@@ -369,15 +338,8 @@ for files in range(0,len(opt_files)):
                 index += 1
 
         if topic==image_topic:
-            try:
-                parse_jpeg(topic, msg, t)
-            except AttributeError, e:
-                try:
-                    parse_mono(topic, msg, t)
-                except AttributeError:
-                    # maybe theora packet
-                    # theora not supported
-                    pass
+            cv_image = convert_image(topic, msg, t)
+            process_frame(cv_image, topic, msg, t)
 
     print "Closing bag"
     bag.close();

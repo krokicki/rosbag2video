@@ -18,6 +18,9 @@ import cv2
 import numpy as np
 import datetime
 
+logo_file = "/home/krad/ros/RhinoHawk_logo2.png"
+logo = cv2.imread(logo_file, cv2.IMREAD_UNCHANGED)
+
 mavCmd = {
     16: "MAV_CMD_NAV_WAYPOINT",
     17: "MAV_CMD_NAV_LOITER_UNLIM",
@@ -86,7 +89,7 @@ def process_frame(topic, msg, t, pix_fmt=None):
         img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
         
         xoffset = 10
-        yoffset = 50
+        yoffset = 90
         linespacing = 15
         row = 0
 
@@ -148,6 +151,14 @@ def process_frame(topic, msg, t, pix_fmt=None):
             cv2.putText(img,DUP_MSG,(x,y),cv2.FONT_HERSHEY_DUPLEX,DUP_FONT_SIZE,(255,255,0),DUP_FONT_THICK,cv2.LINE_AA)
         dup += 1                
 
+	x = 10
+	y = 30
+
+       	overlay_image_alpha(img,
+                    logo[:, :, 0:3],
+                    (x, y),
+                    logo[:, :, 3] / 255.0) 
+
         #img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
         #img = cv2.resize(img, (0,0), fx=0.5, fy=0.5) 
         p_avconv[topic].write(img)
@@ -159,6 +170,40 @@ def process_frame(topic, msg, t, pix_fmt=None):
             key=cv2.waitKey(1)
             if key==1048603:
                 exit(1);
+
+
+def overlay_image_alpha(img, img_overlay, pos, alpha_mask):
+    """Overlay img_overlay on top of img at the position specified by
+    pos and blend using alpha_mask.
+
+    Alpha mask must contain values within the range [0, 1] and be the
+    same size as img_overlay.
+
+    https://stackoverflow.com/questions/14063070/overlay-a-smaller-image-on-a-larger-image-python-opencv
+    """
+
+    x, y = pos
+
+    # Image ranges
+    y1, y2 = max(0, y), min(img.shape[0], y + img_overlay.shape[0])
+    x1, x2 = max(0, x), min(img.shape[1], x + img_overlay.shape[1])
+
+    # Overlay ranges
+    y1o, y2o = max(0, -y), min(img_overlay.shape[0], img.shape[0] - y)
+    x1o, x2o = max(0, -x), min(img_overlay.shape[1], img.shape[1] - x)
+
+    # Exit if nothing to do
+    if y1 >= y2 or x1 >= x2 or y1o >= y2o or x1o >= x2o:
+        return
+
+    channels = img.shape[2]
+
+    alpha = alpha_mask[y1o:y2o, x1o:x2o]
+    alpha_inv = 1.0 - alpha
+
+    for c in range(channels):
+        img[y1:y2, x1:x2, c] = (alpha * img_overlay[y1o:y2o, x1o:x2o, c] +
+                                alpha_inv * img[y1:y2, x1:x2, c])
 
 
 def parse_jpeg(topic, msg, t):
@@ -298,7 +343,6 @@ for files in range(0,len(opt_files)):
         if topic=="/gopro/target_position_local":
             position = getattr(msg, "point")
             telemetry["Target Position"] = "%d,%d,%d" % (position.x, position.y, position.z)
-            print("Target!")
 
         if topic=="/mavros/radio_status":
             telemetry["Remote RSSI"] = getattr(msg, "remrssi")
